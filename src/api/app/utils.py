@@ -10,7 +10,7 @@ load_dotenv()
 def getenv_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).lower() in ("yes", "y", "true", "1", "t")
 
-API_KEY = os.getenv('API_KEY', 'your_api_key_here')
+API_KEY = os.getenv('API_KEY', 'sk')
 REQUIRE_API_KEY = getenv_bool('REQUIRE_API_KEY', True)
 
 def require_api_key(f):

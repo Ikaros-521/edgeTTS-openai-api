@@ -1,30 +1,3 @@
-# server.py
-
-from flask import Flask, request, send_file, jsonify, render_template_string
-from gevent.pywsgi import WSGIServer
-from dotenv import load_dotenv
-import os
-
-from tts_handler import generate_speech, get_models, get_voices
-from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
-
-app = Flask(__name__)
-load_dotenv()
-
-API_KEY = os.getenv('API_KEY', 'sk')
-PORT = int(os.getenv('PORT', 5050))
-
-DEFAULT_VOICE = os.getenv('DEFAULT_VOICE', 'en-US-AndrewNeural')
-DEFAULT_RESPONSE_FORMAT = os.getenv('DEFAULT_RESPONSE_FORMAT', 'mp3')
-DEFAULT_SPEED = float(os.getenv('DEFAULT_SPEED', 1.0))
-
-# DEFAULT_MODEL = os.getenv('DEFAULT_MODEL', 'tts-1')
-
-# HTML文件路径
-HTML_FILE = os.path.join(os.path.dirname(__file__), 'index.html')
-
-# 添加一个完整的 HTML 测试页面（备用，如果文件不存在则使用）
-HOME_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -102,6 +75,67 @@ HOME_TEMPLATE = """
             grid-template-columns: 1fr 1fr;
             gap: 15px;
         }
+        .voice-search-wrapper {
+            position: relative;
+        }
+        .voice-search-input {
+            width: 100%;
+            padding: 10px 40px 10px 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .voice-search-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .voice-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            margin-top: 2px;
+        }
+        .voice-dropdown.show {
+            display: block;
+        }
+        .voice-option {
+            padding: 10px;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .voice-option:hover {
+            background: #f0f0f0;
+        }
+        .voice-option:last-child {
+            border-bottom: none;
+        }
+        .voice-option-name {
+            font-weight: 500;
+            color: #333;
+        }
+        .voice-option-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 2px;
+        }
+        .search-icon {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #999;
+            pointer-events: none;
+        }
         .btn {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -125,6 +159,12 @@ HOME_TEMPLATE = """
         .btn-secondary {
             background: #6c757d;
         }
+        .btn-copy {
+            background: #28a745;
+            padding: 8px 16px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
         .result {
             margin-top: 20px;
             padding: 15px;
@@ -147,6 +187,18 @@ HOME_TEMPLATE = """
             overflow-x: auto;
             font-size: 12px;
             line-height: 1.5;
+        }
+        .url-display {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border: 1px solid #ddd;
+            word-break: break-all;
+        }
+        .url-display code {
+            color: #667eea;
+            font-size: 13px;
         }
         .audio-player {
             margin-top: 15px;
@@ -227,12 +279,22 @@ HOME_TEMPLATE = """
                 </div>
                 <div class="form-group">
                     <label>文本内容 (text):</label>
-                    <textarea id="tts-text" placeholder="输入要合成的文本">Hello, this is a test of the TTS API.</textarea>
+                    <textarea id="tts-text" placeholder="输入要合成的文本">你好，这是一个TTS API测试。</textarea>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label>说话人 (voice):</label>
-                        <input type="text" id="tts-voice" placeholder="例如: en-US-AndrewNeural" value="en-US-AndrewNeural">
+                        <div class="voice-search-wrapper">
+                            <input type="text" id="tts-voice" class="voice-search-input" 
+                                   placeholder="搜索或输入说话人名称，例如: zh-CN-XiaoxiaoNeural" 
+                                   value="zh-CN-XiaoxiaoNeural"
+                                   autocomplete="off"
+                                   oninput="filterVoices('tts-voice', 'tts-voice-dropdown')"
+                                   onfocus="showVoiceDropdown('tts-voice-dropdown')"
+                                   onclick="showVoiceDropdown('tts-voice-dropdown')">
+                            <span class="search-icon">🔍</span>
+                            <div class="voice-dropdown" id="tts-voice-dropdown"></div>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>音频格式 (format):</label>
@@ -254,6 +316,11 @@ HOME_TEMPLATE = """
                 <div class="loading" id="tts-loading">正在生成语音...</div>
                 <div class="result" id="tts-result">
                     <h3>结果:</h3>
+                    <div class="url-display" id="tts-url-display" style="display: none;">
+                        <strong>GET URL:</strong>
+                        <code id="tts-url"></code>
+                        <button class="btn btn-copy" onclick="copyToClipboard('tts-url')">📋 复制</button>
+                    </div>
                     <audio id="tts-audio" class="audio-player" controls></audio>
                     <div id="tts-message"></div>
                 </div>
@@ -273,7 +340,17 @@ HOME_TEMPLATE = """
                 <div class="form-row">
                     <div class="form-group">
                         <label>说话人 (voice):</label>
-                        <input type="text" id="openai-voice" placeholder="例如: en-US-AndrewNeural" value="en-US-AndrewNeural">
+                        <div class="voice-search-wrapper">
+                            <input type="text" id="openai-voice" class="voice-search-input" 
+                                   placeholder="搜索或输入说话人名称" 
+                                   value="en-US-AndrewNeural"
+                                   autocomplete="off"
+                                   oninput="filterVoices('openai-voice', 'openai-voice-dropdown')"
+                                   onfocus="showVoiceDropdown('openai-voice-dropdown')"
+                                   onclick="showVoiceDropdown('openai-voice-dropdown')">
+                            <span class="search-icon">🔍</span>
+                            <div class="voice-dropdown" id="openai-voice-dropdown"></div>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>音频格式 (response_format):</label>
@@ -353,6 +430,127 @@ HOME_TEMPLATE = """
 
     <script>
         const API_BASE = window.location.origin;
+        
+        // 默认中文语音列表（硬编码）
+        const chineseVoices = [
+            {name: 'wuu-CN-XiaotongNeural', gender: 'Female', language: 'wuu-CN'},
+            {name: 'wuu-CN-YunzheNeural', gender: 'Male', language: 'wuu-CN'},
+            {name: 'yue-CN-XiaoMinNeural', gender: 'Female', language: 'yue-CN'},
+            {name: 'yue-CN-YunSongNeural', gender: 'Male', language: 'yue-CN'},
+            {name: 'zh-CN-Xiaochen:DragonHDFlashLatestNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-Xiaochen:DragonHDLatestNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaochenMultilingualNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaochenNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaohanNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaomengNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaomoNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoqiuNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaorouNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoruiNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-Xiaoshuang:DragonHDFlashLatestNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoshuangMultilingualNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoshuangNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-Xiaoxiao2:DragonHDFlashLatestNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-Xiaoxiao:DragonHDFlashLatestNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoxiaoDialectsNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoxiaoMultilingualNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoxiaoNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoyanNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoyiNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-Xiaoyou:DragonHDFlashLatestNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoyouMultilingualNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoyouNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaoyuMultilingualNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-XiaozhenNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-Yunfan:DragonHDLatestNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunfanMultilingualNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunfengNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunhaoNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunjianNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunjieNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunxiNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-Yunxia:DragonHDFlashLatestNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunxiaNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-Yunxiao:DragonHDFlashLatestNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunxiaoMultilingualNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunyangNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-Yunye:DragonHDFlashLatestNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunyeNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-Yunyi:DragonHDFlashLatestNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunyiMultilingualNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-YunzeNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-guangxi-YunqiNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-henan-YundengNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-liaoning-XiaobeiNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-liaoning-YunbiaoNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-shaanxi-XiaoniNeural', gender: 'Female', language: 'zh-CN'},
+            {name: 'zh-CN-shandong-YunxiangNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-CN-sichuan-YunxiNeural', gender: 'Male', language: 'zh-CN'},
+            {name: 'zh-HK-HiuGaaiNeural', gender: 'Female', language: 'zh-HK'},
+            {name: 'zh-HK-HiuMaanNeural', gender: 'Female', language: 'zh-HK'},
+            {name: 'zh-HK-WanLungNeural', gender: 'Male', language: 'zh-HK'},
+            {name: 'zh-TW-HsiaoChenNeural', gender: 'Female', language: 'zh-TW'},
+            {name: 'zh-TW-HsiaoYuNeural', gender: 'Female', language: 'zh-TW'},
+            {name: 'zh-TW-YunJheNeural', gender: 'Male', language: 'zh-TW'}
+        ];
+        let allVoices = [];
+
+        // 页面加载时初始化语音下拉框
+        window.addEventListener('DOMContentLoaded', () => {
+            populateVoiceDropdown('tts-voice-dropdown', chineseVoices, 'tts-voice');
+            populateVoiceDropdown('openai-voice-dropdown', chineseVoices, 'openai-voice');
+        });
+
+        // 填充语音下拉框
+        function populateVoiceDropdown(dropdownId, voices, inputId) {
+            const dropdown = document.getElementById(dropdownId);
+            dropdown.innerHTML = '';
+            
+            voices.forEach(voice => {
+                const option = document.createElement('div');
+                option.className = 'voice-option';
+                option.innerHTML = `
+                    <div class="voice-option-name">${voice.name}</div>
+                    <div class="voice-option-info">${voice.gender} · ${voice.language}</div>
+                `;
+                option.onclick = () => {
+                    document.getElementById(inputId).value = voice.name;
+                    dropdown.classList.remove('show');
+                };
+                dropdown.appendChild(option);
+            });
+        }
+
+        // 显示语音下拉框
+        function showVoiceDropdown(dropdownId) {
+            const dropdown = document.getElementById(dropdownId);
+            dropdown.classList.add('show');
+        }
+
+        // 过滤语音
+        function filterVoices(inputId, dropdownId) {
+            const input = document.getElementById(inputId);
+            const dropdown = document.getElementById(dropdownId);
+            const searchTerm = input.value.toLowerCase();
+            
+            const filtered = chineseVoices.filter(voice => 
+                voice.name.toLowerCase().includes(searchTerm) ||
+                voice.language.toLowerCase().includes(searchTerm) ||
+                voice.gender.toLowerCase().includes(searchTerm)
+            );
+            
+            populateVoiceDropdown(dropdownId, filtered, inputId);
+            dropdown.classList.add('show');
+        }
+
+        // 点击外部关闭下拉框
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.voice-search-wrapper')) {
+                document.querySelectorAll('.voice-dropdown').forEach(dropdown => {
+                    dropdown.classList.remove('show');
+                });
+            }
+        });
 
         // 普通TTS接口测试
         async function testSimpleTTS() {
@@ -371,12 +569,22 @@ HOME_TEMPLATE = """
             const loading = document.getElementById('tts-loading');
             const result = document.getElementById('tts-result');
             const audio = document.getElementById('tts-audio');
+            const urlDisplay = document.getElementById('tts-url-display');
+            const urlElement = document.getElementById('tts-url');
 
             loading.classList.add('show');
             result.classList.remove('show');
 
             try {
                 let url = `${API_BASE}/tts?key=${encodeURIComponent(key)}&text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}&format=${format}&speed=${speed}`;
+                
+                // 显示GET URL
+                if (method === 'GET') {
+                    urlElement.textContent = url;
+                    urlDisplay.style.display = 'block';
+                } else {
+                    urlDisplay.style.display = 'none';
+                }
                 
                 if (method === 'POST') {
                     const response = await fetch(`${API_BASE}/tts`, {
@@ -496,11 +704,17 @@ HOME_TEMPLATE = """
                     }
                 });
 
-                const json = await response.json();
-                data.textContent = JSON.stringify(json, null, 2);
-                result.classList.add('show');
+                if (response.ok) {
+                    const json = await response.json();
+                    data.textContent = JSON.stringify(json, null, 2);
+                    result.classList.add('show');
+                } else {
+                    const error = await response.json();
+                    data.innerHTML = `<div class="error">错误 ${response.status}: ${error.error || '请求失败'}</div>`;
+                    result.classList.add('show');
+                }
             } catch (error) {
-                data.textContent = `错误: ${error.message}`;
+                data.innerHTML = `<div class="error">请求失败: ${error.message}</div>`;
                 result.classList.add('show');
             } finally {
                 loading.classList.remove('show');
@@ -534,11 +748,17 @@ HOME_TEMPLATE = """
                     }
                 });
 
-                const json = await response.json();
-                displayVoices(data, json.voices || []);
-                result.classList.add('show');
+                if (response.ok) {
+                    const json = await response.json();
+                    displayVoices(data, json.voices || []);
+                    result.classList.add('show');
+                } else {
+                    const error = await response.json().catch(() => ({error: '请求失败'}));
+                    data.innerHTML = `<div class="error">错误 ${response.status}: ${error.error || '请求失败'}</div>`;
+                    result.classList.add('show');
+                }
             } catch (error) {
-                data.innerHTML = `<div class="error">错误: ${error.message}</div>`;
+                data.innerHTML = `<div class="error">请求失败: ${error.message}</div>`;
                 result.classList.add('show');
             } finally {
                 loading.classList.remove('show');
@@ -567,11 +787,17 @@ HOME_TEMPLATE = """
                     }
                 });
 
-                const json = await response.json();
-                displayVoices(data, json.voices || []);
-                result.classList.add('show');
+                if (response.ok) {
+                    const json = await response.json();
+                    displayVoices(data, json.voices || []);
+                    result.classList.add('show');
+                } else {
+                    const error = await response.json().catch(() => ({error: '请求失败'}));
+                    data.innerHTML = `<div class="error">错误 ${response.status}: ${error.error || '请求失败'}</div>`;
+                    result.classList.add('show');
+                }
             } catch (error) {
-                data.innerHTML = `<div class="error">错误: ${error.message}</div>`;
+                data.innerHTML = `<div class="error">请求失败: ${error.message}</div>`;
                 result.classList.add('show');
             } finally {
                 loading.classList.remove('show');
@@ -605,132 +831,44 @@ HOME_TEMPLATE = """
             element.className = type;
             element.textContent = message;
         }
+
+        // 复制到剪贴板
+        function copyToClipboard(elementId) {
+            const element = document.getElementById(elementId);
+            const text = element.textContent;
+            
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(text).then(() => {
+                    alert('已复制到剪贴板！');
+                }).catch(err => {
+                    console.error('复制失败:', err);
+                    fallbackCopyTextToClipboard(text);
+                });
+            } else {
+                fallbackCopyTextToClipboard(text);
+            }
+        }
+
+        // 备用复制方法
+        function fallbackCopyTextToClipboard(text) {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.top = "0";
+            textArea.style.left = "0";
+            textArea.style.position = "fixed";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                alert('已复制到剪贴板！');
+            } catch (err) {
+                console.error('复制失败:', err);
+                alert('复制失败，请手动复制');
+            }
+            document.body.removeChild(textArea);
+        }
     </script>
 </body>
 </html>
-"""
 
-@app.route('/')
-def home():
-    # 尝试读取独立的HTML文件，如果不存在则使用模板
-    if os.path.exists(HTML_FILE):
-        with open(HTML_FILE, 'r', encoding='utf-8') as f:
-            return f.read()
-    else:
-        return render_template_string(HOME_TEMPLATE, port=PORT)
-
-@app.route('/v1/audio/speech', methods=['POST'])
-@require_api_key
-def text_to_speech():
-    data = request.json
-    if not data or 'input' not in data:
-        return jsonify({"error": "Missing 'input' in request body"}), 400
-
-    text = data.get('input')
-    # model = data.get('model', DEFAULT_MODEL)
-    voice = data.get('voice', DEFAULT_VOICE)
-
-    response_format = data.get('response_format', DEFAULT_RESPONSE_FORMAT)
-    speed = float(data.get('speed', DEFAULT_SPEED))
-    
-    mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format, "audio/mpeg")
-
-    # Generate the audio file in the specified format with speed adjustment
-    output_file_path = generate_speech(text, voice, response_format, speed)
-
-    # Return the file with the correct MIME type
-    return send_file(output_file_path, mimetype=mime_type, as_attachment=True, download_name=f"speech.{response_format}")
-
-@app.route('/v1/models', methods=['GET', 'POST'])
-@require_api_key
-def list_models():
-    return jsonify({"data": get_models()})
-
-@app.route('/v1/voices', methods=['GET', 'POST'])
-@require_api_key
-def list_voices():
-    specific_language = None
-
-    data = request.args if request.method == 'GET' else request.json
-    if data and ('language' in data or 'locale' in data):
-        specific_language = data.get('language') if 'language' in data else data.get('locale')
-
-    return jsonify({"voices": get_voices(specific_language)})
-
-@app.route('/v1/voices/all', methods=['GET', 'POST'])
-@require_api_key
-def list_all_voices():
-    return jsonify({"voices": get_voices('all')})
-
-@app.route('/api/voices/chinese', methods=['GET'])
-def list_chinese_voices():
-    """获取中文语音列表，无需密钥验证，供前端使用"""
-    try:
-        # 获取所有中文语音（包括简体中文和繁体中文）
-        all_voices = get_voices('all')
-        chinese_voices = [
-            v for v in all_voices 
-            if v['language'].startswith('zh')
-        ]
-        return jsonify({"voices": chinese_voices})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/tts', methods=['GET', 'POST'])
-def simple_tts():
-    """
-    普通TTS接口，支持GET和POST
-    参数：
-    - text: 文本内容（必需）
-    - voice: 说话人（可选，默认使用DEFAULT_VOICE）
-    - key: 密钥（必需）
-    - format: 音频格式（可选，默认mp3）
-    - speed: 语速（可选，默认1.0）
-    """
-    # 从GET参数或POST参数中获取数据
-    if request.method == 'GET':
-        data = request.args
-    else:
-        # POST请求支持JSON和form-data
-        if request.is_json:
-            data = request.json or {}
-        else:
-            data = request.form.to_dict()
-    
-    # 验证密钥
-    api_key = data.get('key') or data.get('api_key')
-    if not api_key or api_key != API_KEY:
-        return jsonify({"error": "Invalid or missing API key"}), 401
-    
-    # 获取必需参数
-    text = data.get('text') or data.get('input')
-    if not text:
-        return jsonify({"error": "Missing 'text' parameter"}), 400
-    
-    # 获取可选参数
-    voice = data.get('voice', DEFAULT_VOICE)
-    response_format = data.get('format') or data.get('response_format', DEFAULT_RESPONSE_FORMAT)
-    speed = float(data.get('speed', DEFAULT_SPEED))
-    
-    mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format, "audio/mpeg")
-    
-    try:
-        # 生成语音
-        output_file_path = generate_speech(text, voice, response_format, speed)
-        
-        # 返回音频文件
-        return send_file(output_file_path, mimetype=mime_type, as_attachment=True, download_name=f"speech.{response_format}")
-    except Exception as e:
-        return jsonify({"error": f"Failed to generate speech: {str(e)}"}), 500
-
-print(f" Edge TTS (Free Azure TTS) Replacement for OpenAI's TTS API")
-print(f" ")
-print(f" * Serving OpenAI Edge TTS")
-print(f" * Server running on http://localhost:{PORT}")
-print(f" * TTS Endpoint: http://localhost:{PORT}/v1/audio/speech")
-print(f" * Simple TTS Endpoint: http://localhost:{PORT}/tts")
-print(f" ")
-
-if __name__ == '__main__':
-    http_server = WSGIServer(('0.0.0.0', PORT), app)
-    http_server.serve_forever()
