@@ -4,6 +4,9 @@ from flask import Flask, request, send_file, jsonify, render_template_string
 from gevent.pywsgi import WSGIServer
 from dotenv import load_dotenv
 import os
+import webbrowser
+import threading
+import time
 
 from tts_handler import generate_speech, get_models, get_voices
 from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
@@ -731,6 +734,18 @@ print(f" * TTS Endpoint: http://localhost:{PORT}/v1/audio/speech")
 print(f" * Simple TTS Endpoint: http://localhost:{PORT}/tts")
 print(f" ")
 
+def open_browser():
+    """延迟打开浏览器，等待服务器启动"""
+    time.sleep(1.5)  # 等待服务器完全启动
+    url = f"http://localhost:{PORT}"
+    webbrowser.open(url)
+    print(f" * Browser opened at {url}")
+
 if __name__ == '__main__':
     http_server = WSGIServer(('0.0.0.0', PORT), app)
+    
+    # 在后台线程中打开浏览器
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
+    
     http_server.serve_forever()

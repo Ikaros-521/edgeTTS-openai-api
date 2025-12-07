@@ -1,0 +1,82 @@
+{
+    "version": "auto-py-to-exe-configuration_v1",
+    "pyinstallerOptions": [
+      {
+        "optionDest": "noconfirm",
+        "value": true
+      },
+      {
+        "optionDest": "filenames",
+        "value": "E:/GitHub_pro/edgeTTS-openai-api/src/api/app/server.py"
+      },
+      {
+        "optionDest": "onefile",
+        "value": true
+      },
+      {
+        "optionDest": "console",
+        "value": true
+      },
+      {
+        "optionDest": "name",
+        "value": "Edge-TTS-API"
+      },
+      {
+        "optionDest": "clean_build",
+        "value": true
+      },
+      {
+        "optionDest": "strip",
+        "value": false
+      },
+      {
+        "optionDest": "noupx",
+        "value": false
+      },
+      {
+        "optionDest": "disable_windowed_traceback",
+        "value": false
+      },
+      {
+        "optionDest": "uac_admin",
+        "value": false
+      },
+      {
+        "optionDest": "uac_uiaccess",
+        "value": false
+      },
+      {
+        "optionDest": "argv_emulation",
+        "value": false
+      },
+      {
+        "optionDest": "bootloader_ignore_signals",
+        "value": false
+      },
+      {
+        "optionDest": "datas",
+        "value": "E:/GitHub_pro/edgeTTS-openai-api/src/api/app/index.html;."
+      },
+      {
+        "optionDest": "hiddenimports",
+        "value": [
+          "edge_tts",
+          "flask",
+          "gevent",
+          "gevent.pywsgi",
+          "dotenv",
+          "python-dotenv",
+          "asyncio",
+          "subprocess",
+          "tempfile",
+          "pkg_resources",
+          "xml.parsers.expat",
+          "pyexpat"  
+        ]
+      }
+    ],
+    "nonPyinstallerOptions": {
+      "increaseRecursionLimit": true,
+      "manualArguments": "--collect-all edge_tts --collect-all flask --collect-all gevent --collect-all setuptools"
+    }
+}

@@ -1,2 +1,6 @@
-src/api/app/__pycache__/tts_handler.cpython-310.pyc
+*.pyc
 src/api/app/__pycache__/utils.cpython-310.pyc
+Miniconda3
+*.__pycache__*
+src/api/app/__pycache__/tts_handler.cpython-311.pyc
+src/api/app/output
